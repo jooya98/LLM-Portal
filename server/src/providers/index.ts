@@ -7,6 +7,14 @@ import { CloudflareProvider } from './cloudflare.js';
 import { AIHordeProvider } from './aihorde.js';
 import { ModelScopeProvider } from './modelscope.js';
 import { PollinationsProvider } from './pollinations.js';
+import { BaiProvider } from './bai.js';
+import { AnyApiProvider } from './anyapi.js';
+import { OrcaRouterProvider } from './orcarouter.js';
+import { QianfanProvider } from './qianfan.js';
+import { VolcengineProvider } from './volcengine.js';
+import { LongCatProvider } from './longcat.js';
+import { XfyunProvider } from './xfyun.js';
+import { ZhipuProvider } from './zhipu.js';
 
 const providers = new Map<Platform, BaseProvider>();
 
@@ -32,6 +40,15 @@ register(new OpenAICompatProvider({
   name: 'Cerebras',
   baseUrl: 'https://api.cerebras.ai/v1',
 }));
+
+// Upstream v0.8.5 additions: additive provider registrations only.
+register(new BaiProvider());
+register(new AnyApiProvider());
+register(new OrcaRouterProvider());
+register(new QianfanProvider());
+register(new VolcengineProvider());
+register(new LongCatProvider());
+register(new XfyunProvider());
 
 // SambaNova was dropped in V23 (June 2026): the free tier is permanently gone.
 // The always-free tier was retired in early 2025 for a one-time $5 trial
@@ -87,19 +104,8 @@ register(new CohereProvider());
 // Cloudflare Workers AI - OpenAI-compatible endpoint (key = "account_id:token")
 register(new CloudflareProvider());
 
-// Zhipu (Z.ai / bigmodel.cn) - OpenAI-compatible
-//
-// glm-4.7-flash is a hidden-reasoning model: it burns through a long
-// reasoning_content before the first answer byte (live-probed 41s TTFB on a
-// one-word completion, 2026-07-11), and Zhipu buffers that phase even when
-// streaming — so the default 15s timeout aborted every attempt. 60s covers
-// the observed worst case with headroom.
-register(new OpenAICompatProvider({
-  platform: 'zhipu',
-  name: 'Zhipu AI',
-  baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-  timeoutMs: 60_000,
-}));
+// Zhipu AI — v0.8.5 dedicated adapter supports both domestic and global key namespaces.
+register(new ZhipuProvider({ timeoutMs: 60_000 }));
 
 // Hugging Face Inference Providers router — re-added in V13. The V4 removal
 // reason ("tool-call format issues") was the legacy serverless route that
