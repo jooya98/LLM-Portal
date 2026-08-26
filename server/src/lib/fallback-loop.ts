@@ -178,7 +178,7 @@ export function cooldownDecisionForError(route: RouteResult, err: any): Cooldown
  *
  * Callers add the just-failed key to skipKeys via this function (do not pre-add).
  */
-export function recordRetryableFailure(route: RouteResult, err: any, state: FallbackState): void {
+export function recordRetryableFailure(route: RouteResult, err: any, state: FallbackState, now: number = Date.now()): void {
   // `skipModelForRequest: true` = the failure is MODEL behavior, not key
   // state (ignored response_format, JSON truncated at max_tokens): a sibling
   // key would reproduce it exactly, so rule out the whole model for this

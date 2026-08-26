@@ -96,7 +96,8 @@ export function isRetryableError(err: any): boolean {
     // First-byte timeout (#584): the grace budget expired before ANY byte
     // reached the client, so the next candidate can serve it invisibly.
     || msg.includes('no first byte')
-    || msg.includes('unparseable inline tool-call dialect');
+    || msg.includes('unparseable inline tool-call dialect')
+    || isTransportError(err);
 }
 
 // A genuine provider QUOTA signal: a structured 429 or rate-limit/quota wording.
@@ -456,4 +457,94 @@ export function isUpstreamClassificationOutput(text: unknown, platform?: string)
   if (!platform || !CLASSIFICATION_RELAY_PLATFORMS.has(platform.toLowerCase())) return false;
   const t = (typeof text === 'string' ? text : '').trim().toLowerCase();
   return t === 'safe' || t === 'unsafe';
+}
+
+// Transport failures hidden in the cause chain (undici)
+// Every rule in isRetryableError above reads the TOP-LEVEL message, and undici
+// does not always put the real failure there. The INITIAL-CONNECT case is
+// covered by luck: undici words a connection that never opened "fetch failed",
+// and the allowlist matches that string. A socket that dies MID-request does
+// not get the same treatment \u2014 it surfaces as a generic wrapper (a bare
+// `TypeError: terminated`, or an adapter's own re-throw) whose `.cause` carries
+// the actual ECONNRESET / EPIPE / "socket hang up" / "premature close" /
+// "other side closed" error, sometimes nested a link or two deeper still.
+// Those fell through every rule and classified FATAL: the client got a 502
+// while the healthy paid routes queued behind the dead one were never tried.
+//
+// Everything matched here is a transient network fault that says nothing about
+// the request or the model, so the next candidate in the chain can serve it.
+// The walk is bounded and cycle-safe: `cause` is attacker-adjacent data (it can
+// come from a provider's own error object) and a self-referential chain on this
+// hot path would hang the request, not just slow it.
+const TRANSPORT_CAUSE_MAX_DEPTH = 5;
+const TRANSPORT_ERROR_CODES = new Set([
+  // Node socket-level codes. A dead/refused/unreachable host is transient from
+  // the chain's point of view either way: the next candidate is a DIFFERENT
+  // host, so even a permanently bad one here is worth failing over rather than
+  // 502-ing the caller.
+  'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'EPIPE', 'ETIMEDOUT',
+  'EAI_AGAIN', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH', 'EADDRNOTAVAIL',
+]);
+// undici stamps its own transport failures with a `UND_ERR_*` code
+// (UND_ERR_SOCKET, UND_ERR_CONNECT_TIMEOUT, UND_ERR_HEADERS_TIMEOUT,
+// UND_ERR_BODY_TIMEOUT, \u2026). Matched by PREFIX rather than enumerated: the list
+// grows with undici releases, and every member of it is a transport condition.
+const UNDICI_ERROR_CODE_PREFIX = 'UND_ERR_';
+const TRANSPORT_MESSAGE_HINTS = [
+  'socket hang up',
+  'premature close',
+  'other side closed',
+  // A socket dropped before the TLS handshake finished \u2014 undici's full wording
+  // is "Client network socket disconnected before secure TLS connection was
+  // established". The peer closed the TCP connection mid-handshake; transient.
+  'client network socket disconnected',
+  // The same codes as above, for the links that carry them in text only (an
+  // error stringified across a boundary keeps the code in its message but
+  // loses the `code` property).
+  'econnreset', 'econnrefused', 'epipe', 'etimedout', 'eai_again',
+];
+
+/** Walk an error's `cause` chain, yielding each link's `code` and `message`.
+ * Includes the error itself as the first link. Bounded to
+ * TRANSPORT_CAUSE_MAX_DEPTH hops and cycle-safe. */
+function errorChainLinks(err: unknown): Array<{ code: string; message: string }> {
+  const links: Array<{ code: string; message: string }> = [];
+  const seen = new Set<unknown>();
+  let cur: any = err;
+  for (let depth = 0; cur != null && depth <= TRANSPORT_CAUSE_MAX_DEPTH; depth++) {
+    if (typeof cur !== 'object' && typeof cur !== 'function') break;
+    if (seen.has(cur)) break;
+    seen.add(cur);
+    links.push({
+      code: typeof cur.code === 'string' ? cur.code : '',
+      message: typeof cur.message === 'string' ? cur.message : '',
+    });
+    cur = cur.cause;
+  }
+  return links;
+}
+
+export function isTransportError(err: any): boolean {
+  if (err == null) return false;
+  // A client hang-up and the fallback time-budget hedge BOTH reach undici as an
+  // aborted socket, and undici labels that abort UND_ERR_ABORTED \u2014 the very
+  // same code a genuine mid-flight socket death carries. Neither is provider
+  // health, so classifying either retryable would resurrect exactly what the
+  // two marked abort errors exist to prevent (no cooldown, no health penalty,
+  // no failure stats for a request the GATEWAY canceled). The structured
+  // markers are authoritative and win over any transport evidence below.
+  if (isClientAbortError(err) || isHedgeAbortError(err)) return false;
+  for (const { code, message } of errorChainLinks(err)) {
+    if (code && (TRANSPORT_ERROR_CODES.has(code) || code.startsWith(UNDICI_ERROR_CODE_PREFIX))) return true;
+    const msg = message.toLowerCase();
+    if (!msg) continue;
+    if (TRANSPORT_MESSAGE_HINTS.some(hint => msg.includes(hint))) return true;
+    // undici's wording for a response body whose socket died mid-read is the
+    // bare word "terminated". Matched as the WHOLE message and never as a
+    // substring: "your account has been terminated" is a fatal billing/auth
+    // condition, and retrying that around the entire chain would burn every
+    // candidate on a request that can never succeed.
+    if (msg.trim() === 'terminated') return true;
+  }
+  return false;
 }
