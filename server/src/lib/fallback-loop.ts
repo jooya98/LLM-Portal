@@ -41,6 +41,7 @@ import {
   isProviderBadRequestError,
   isProviderDegradedError,
   isContextTooLargeError,
+  isProviderLevelError, 
   isTimeoutErrorText,
 } from './error-classify.js';
 import { sanitizeProviderErrorMessage, summarizeAttemptError } from './error-redaction.js';
@@ -88,12 +89,13 @@ export function getFallbackTimeBudgetMs(): number {
 // "platform:modelId:keyId"; skipModels holds model_db_ids ruled out for the
 // rest of this request.
 export interface FallbackState {
+  skipPlatforms: Set<string>; 
   skipKeys: Set<string>;
   skipModels: Set<number>;
 }
 
 export function newFallbackState(): FallbackState {
-  return { skipKeys: new Set<string>(), skipModels: new Set<number>() };
+  return { skipKeys: new Set<string>(), skipModels: new Set<number>(), skipPlatforms: new Set<string>() }; 
 }
 
 // Milliseconds until the next UTC midnight — when most providers' daily free
@@ -194,6 +196,16 @@ export function recordRetryableFailure(route: RouteResult, err: any, state: Fall
   // sibling keys counts as the single observation it is.
   noteModelRetirementSignal(route, err, getRequestTrace());
   state.skipKeys.add(`${route.platform}:${route.modelId}:${route.keyId}`);
+  // #788: provider-level failures (5xx / timeout / transport / degraded) mean
+  // the PROVIDER is sick, not this key - every key AND every model of that
+  // platform would fail identically. Rule out the whole platform for this
+  // request so the loop moves to the NEXT provider instead of burning one
+  // failover hop per key. Key-scoped failures (auth/quota) stay on the
+  // single-key path, and the per-key cooldown below is still the only thing
+  // that outlives the request.
+  if (isProviderLevelError(err)) {
+    state.skipPlatforms.add(route.platform);
+  }
   if (err?.skipBench === true) return;
   const decision = cooldownDecisionForError(route, err);
   setCooldown(route.platform, route.modelId, route.keyId, decision.durationMs, decision.source);
