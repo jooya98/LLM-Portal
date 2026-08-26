@@ -32,12 +32,12 @@ export interface ImportSelectedResponse {
   total: number;
 }
 
-// Active platforms — must match server/src/providers/index.ts and
+// Active platforms  must match server/src/providers/index.ts and
 // server/src/routes/keys.ts PLATFORMS allowlist.
 // Moonshot and MiniMax direct integrations were dropped in migrateModelsV4
 // (see server/src/db/index.ts). HuggingFace was dropped in V4 and re-added
 // in V13 via the router.huggingface.co Inference Providers meta-router.
-// SambaNova was dropped in V23 (free tier permanently retired — 402
+// SambaNova was dropped in V23 (free tier permanently retired  402
 // "payment method required" once the one-time $5 trial credit lapses).
 export type Platform =
   | 'google'
@@ -56,66 +56,103 @@ export type Platform =
   | 'pollinations'
   | 'llm7'
   | 'huggingface'
-  // OpenCode Zen — OpenAI-compatible gateway. Free promotional models require a
+  // OpenCode Zen  OpenAI-compatible gateway. Free promotional models require a
   // free (no-card) account key from opencode.ai/auth; see migrateModelsV18.
   | 'opencode'
-  // OVHcloud AI Endpoints — OpenAI-compatible, keyless anonymous tier
+  // OVHcloud AI Endpoints  OpenAI-compatible, keyless anonymous tier
   // (2 req/min per IP per model); see migrateModelsV26.
   | 'ovh'
-  // Agnes AI (Sapiens AI) — OpenAI-compatible (LiteLLM + vLLM backend). Serves
+  // Agnes AI (Sapiens AI)  OpenAI-compatible (LiteLLM + vLLM backend). Serves
   // its own proprietary Agnes models; the free key comes from
   // platform.agnes-ai.com (no card).
   | 'agnes'
-  // Reka — OpenAI-compatible. Native multimodal models (reka-edge takes
+  // Reka  OpenAI-compatible. Native multimodal models (reka-edge takes
   // image/video); free via a recurring monthly credit grant, key from
   // platform.reka.ai (no card).
   | 'reka'
-  // SiliconFlow — OpenAI-compatible. Registered for its FREE generative-media
+  // SiliconFlow  OpenAI-compatible. Registered for its FREE generative-media
   // models (FLUX.1-schnell image, CosyVoice2 TTS) routed via services/media.ts;
   // chat is supported too. Key from siliconflow.com (no card).
   | 'siliconflow'
-  // Routeway — OpenAI-compatible aggregator. Free ':free' models ($0) on a
+  // Routeway  OpenAI-compatible aggregator. Free ':free' models ($0) on a
   // rate-limited pool (~5 rpm observed); requires a browser User-Agent (CF
   // blocks others). Key from routeway.ai (no card).
   | 'routeway'
-  // BazaarLink — OpenAI-compatible aggregator. Free 'auto:free' route picks an
+  // BazaarLink  OpenAI-compatible aggregator. Free 'auto:free' route picks an
   // available zero-cost model. Key from bazaarlink.ai (no card).
   | 'bazaarlink'
-  // AINative Studio — OpenAI-compatible aggregator. Advertises a recurring
+  // AINative Studio  OpenAI-compatible aggregator. Advertises a recurring
   // ~10M tokens/month free allocation (no card); quota unverified. Key from
   // ainative.studio.
   | 'ainative'
-  // Aion Labs — OpenAI-compatible aggregator with a no-card free API key.
+  // Aion Labs  OpenAI-compatible aggregator with a no-card free API key.
   // Catalog rows live in the Oracle catalog (premium now, free after 30 days).
   | 'aion'
-  // Requesty — OpenAI-compatible router with no-card free models/credits.
+  // Requesty  OpenAI-compatible router with no-card free models/credits.
   // Catalog rows live in the Oracle catalog (premium now, free after 30 days).
   | 'requesty'
-  // NavyAI — OpenAI-compatible unified API. Free plan is 150K tokens/day and
+  // NavyAI  OpenAI-compatible unified API. Free plan is 150K tokens/day and
   // 20 RPM; catalog rows live in the Oracle catalog (premium now, free after 30 days).
   | 'navy'
-  // NaraRouter — OpenAI-compatible aggregator. Free account key from
+  // NaraRouter  OpenAI-compatible aggregator. Free account key from
   // router.bynara.id after Telegram channel/link verification; free-plan routes
   // reset daily and are catalog-managed (premium now, free after 30 days).
   | 'nara'
-  // SEA-LION (AI Singapore) — OpenAI-compatible first-party API. Free key
+  // SEA-LION (AI Singapore)  OpenAI-compatible first-party API. Free key
   // (Google sign-in, no card, no region wall) at 10 RPM; catalog rows live in
   // the Oracle catalog (premium now, free after 30 days).
   | 'sealion'
-  // ModelScope (魔搭社区, Alibaba) — OpenAI-compatible inference API
+  // ModelScope (, Alibaba)  OpenAI-compatible inference API
   // (api-inference.modelscope.cn/v1). Free tier is 2000 requests/day
   // account-wide, but calls only work after the ModelScope account is bound to
   // an Alibaba Cloud CHINA-site (cn) account with Chinese real-name
-  // verification — tokens mint without binding, then every call 401s. Catalog
+  // verification  tokens mint without binding, then every call 401s. Catalog
   // rows land after community testing confirms per-model behavior (#581).
   | 'modelscope'
-  // AI Horde — free, community-powered inference (volunteer workers) via an
+  // AI Horde  free, community-powered inference (volunteer workers) via an
   // OpenAI-compatible proxy (https://oai.aihorde.net/v1). Queue-based, so calls
   // can take tens of seconds; no tool support; usage is reported as kudos, not
   // tokens. Anonymous key `0000000000` works (lowest priority); a registered
   // aihorde.net key raises queue priority. Has a dedicated AIHordeProvider that
   // normalizes the proxy's OpenAI divergences. See issue #345.
   | 'aihorde'
+  // B.AI  OpenAI-compatible gateway. Free tier is a limited-time 0-credit
+  // promo; catalog rows live in the hosted catalog. Key from api.b.ai (no card).
+  | 'bai'
+  // AnyAPI  OpenAI-compatible aggregator (anyapi.ai). Free tier: 100K tokens
+  // per day; only "free and basic" models are in scope. Key from anyapi.ai
+  // (no card). Catalog rows are NOT shipped as migrations; see providers/index.ts.
+  | 'anyapi'
+  // OrcaRouter  OpenAI-compatible aggregator (orcarouter.com). Free key from
+  // orcarouter.ai (no card, `sk-orca-` prefix). Free routes (`*-free`) never fall
+  // back to paid models, so 429 is a clean quota signal. Live-verified 2026-08-15.
+  // Catalog rows live in the Oracle catalog (premium now, free after 30 days).
+  | 'orcarouter'
+  // UnoRouter  OpenAI-compatible aggregator (unorouter.com). Free key from
+  // unorouter.com (no card); free models carry `:free` suffix. Live-probed
+  // 2026-08-23. Catalog rows live in the hosted catalog (premium now, free
+  // after 30 days).
+  | 'unorouter'
+  // xKiro  OpenAI-compatible gateway (xkiro.com). Free key from xkiro.com
+  // (no card); /v1/usage reports free_tokens limit_per_day=5,000,000. Paid models
+  // answer 403; free ones (Mistral, MiniMax, DeepSeek) answer normally.
+  | 'xkiro'
+  //  Chinese domestic providers 
+  // Plain OpenAI-compatible Bearer endpoints. Each requires Chinese real-name
+  // verification on the cloud account before a key serves traffic (LongCat
+  // aside  it takes an email signup from outside mainland China). Catalog rows
+  // live in the hosted catalog (never in migrations), so free users get them
+  // after the premium window.
+  // Baidu Qianfan (ERNIE-Speed / ERNIE-Lite / ERNIE-Tiny are free via
+  // pay-as-you-go billing, bounded by rate limits).
+  | 'qianfan'
+  // Volcengine Ark (ByteDance). Doubao models on a recurring daily
+  // per-model free reward quota (2M tokens/day/model).
+  | 'volcengine'
+  // LongCat (Meituan). Daily free quota; also speaks Anthropic wire format.
+  | 'longcat'
+  // iFlytek Spark (console APIPassword as Bearer token; the Lite model is free).
+  | 'xfyun'
   // User-configured OpenAI-compatible endpoint (llama.cpp, LM Studio, vLLM,
   // Ollama, any base_url). The endpoint URL lives on the api_keys row; see #117.
   | 'custom';
@@ -217,7 +254,7 @@ export interface FallbackEntry {
   speedRank: number;
   priority: number;
   enabled: boolean;
-  // Present when model unification is enabled — identifies the logical model
+  // Present when model unification is enabled  identifies the logical model
   // this provider row belongs to so the dashboard can render grouped rows.
   groupKey?: string;
   canonicalId?: string;
@@ -229,7 +266,7 @@ export interface FallbackEntry {
 // table). When unification is enabled, those rows collapse into a single group
 // keyed by a normalized display name; see server/src/services/model-groups.ts.
 export interface ModelGroupInfo {
-  groupKey: string;     // normalized display name — the grouping identity
+  groupKey: string;     // normalized display name  the grouping identity
   canonicalId: string;  // stable slug advertised on /v1/models
   groupLabel: string;   // human label (suffix-stripped display name)
 }
@@ -287,7 +324,7 @@ export type ChatToolChoice =
 // OpenAI's multimodal envelope: clients like opencode / continue.dev send
 // content as an array of typed blocks even for text-only messages, and
 // Gemini-lineage agents (Qwen Code, AionUI) send part-style `{ text }` blocks
-// with no `type` — plus bare strings inside arrays. We accept all of it on
+// with no `type`  plus bare strings inside arrays. We accept all of it on
 // the wire and flatten to string for providers that don't support arrays
 // (Cohere, Cloudflare). See server/src/lib/content.ts. (#200)
 export type ChatContentBlock = string | { type?: string; text?: string; [key: string]: unknown };
