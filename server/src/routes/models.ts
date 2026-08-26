@@ -13,7 +13,8 @@ import {
 } from '../services/model-state.js';
 import { pruneUnavailableSavedFusionConfig } from '../services/fusion.js';
 import { getActiveProfileId } from '../services/profile-models.js';
-import { qualifiedModelMemberId } from '../lib/endpoint-scope.js';
+import { endpointScopeOfKey, qualifiedModelMemberId } from '../lib/endpoint-scope.js';
+import { recordCustomModelTombstone } from '../services/custom-model-tombstone.js';
 
 export const modelsRouter = Router();
 
@@ -21,7 +22,10 @@ const modelUpdateSchema = z.object({
   displayName: z.string().min(1).max(200).optional(),
   intelligenceRank: z.number().int().min(1).max(1000).optional(),
   speedRank: z.number().int().min(1).max(1000).optional(),
-  sizeLabel: z.string().min(1).max(40).optional(),
+  // '' is a legal value: size_label is TEXT NOT NULL DEFAULT '' and the empty
+  // string is the canonical "unscored" tier (scores 0 on the intelligence
+  // axis), so the dashboard's "None" option must be able to send it.
+  sizeLabel: z.string().max(40).optional(),
   rpmLimit: z.number().int().positive().nullable().optional(),
   rpdLimit: z.number().int().positive().nullable().optional(),
   tpmLimit: z.number().int().positive().nullable().optional(),
@@ -32,10 +36,6 @@ const modelUpdateSchema = z.object({
   supportsVision: z.boolean().optional(),
   supportsTools: z.boolean().optional(),
   fallbackEnabled: z.boolean().optional(),
-}).strict();
-
-const fallbackOverrideSchema = z.object({
-  chain: z.array(z.number().int().positive()),
 }).strict();
 
 const MODEL_FIELD_COLUMNS: Record<keyof ModelOverridePatch | 'enabled', string> = {
@@ -81,13 +81,16 @@ modelsRouter.delete('/custom/:id', (req: Request, res: Response) => {
   }
 
   const db = getDb();
-  const row = db.prepare("SELECT id, key_id FROM models WHERE id = ? AND platform = 'custom'").get(id) as { id: number; key_id: number | null } | undefined;
+  const row = db.prepare("SELECT id, key_id, model_id FROM models WHERE id = ? AND platform = 'custom'").get(id) as { id: number; key_id: number | null; model_id: string } | undefined;
   if (!row) {
     res.status(404).json({ error: { message: `Unknown custom model ${id}` } });
     return;
   }
 
   const remove = db.transaction(() => {
+    // #926: keep this deletion across the scheduled custom-model sync, or the
+    // next daily pass re-registers a model the operator removed on purpose.
+    recordCustomModelTombstone(db, endpointScopeOfKey(db, row.key_id), row.model_id);
     db.prepare('DELETE FROM fallback_config WHERE model_db_id = ?').run(id);
     db.prepare("DELETE FROM models WHERE id = ? AND platform = 'custom'").run(id);
     deleteUnusedCustomEndpointKey(db, row.key_id);
@@ -190,6 +193,10 @@ modelsRouter.delete('/:id', (req: Request, res: Response) => {
   const remove = db.transaction(() => {
     if (isCatalogManagedModel(row)) {
       recordCatalogModelTombstone(db, 'chat', row.platform, row.model_id);
+    } else if (row.platform === 'custom') {
+      // #926: same "keep it deleted" contract for custom relay models — the
+      // scheduled custom-model sync must not resurrect this row.
+      recordCustomModelTombstone(db, endpointScopeOfKey(db, row.key_id), row.model_id);
     }
     db.prepare('DELETE FROM fallback_config WHERE model_db_id = ?').run(id);
     db.prepare('DELETE FROM models WHERE id = ?').run(id);
@@ -198,97 +205,6 @@ modelsRouter.delete('/:id', (req: Request, res: Response) => {
   remove();
 
   res.json({ success: true, tombstoned: isCatalogManagedModel(row) });
-});
-
-// Set fallback override chain for a model
-modelsRouter.put('/:id/fallback-override', (req: Request, res: Response) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id)) {
-    res.status(400).json({ error: { message: 'Invalid id' } });
-    return;
-  }
-
-  const parsed = fallbackOverrideSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: { message: parsed.error.errors.map(e => e.message).join(', ') } });
-    return;
-  }
-
-  const db = getDb();
-  const modelRow = fetchModelRow(id);
-  if (!modelRow) {
-    res.status(404).json({ error: { message: `Unknown model ${id}` } });
-    return;
-  }
-
-  // Validate all model ids in the chain exist
-  const invalidIds: number[] = [];
-  for (const modelId of parsed.data.chain) {
-    const exists = db.prepare('SELECT 1 FROM models WHERE id = ?').get(modelId) as { '1': number } | undefined;
-    if (!exists) {
-      invalidIds.push(modelId);
-    }
-  }
-
-  if (invalidIds.length > 0) {
-    res.status(400).json({
-      error: {
-        message: `Invalid model id(s) in chain: ${invalidIds.join(', ')}`
-      }
-    });
-    return;
-  }
-
-  const upsert = db.prepare(`
-    INSERT INTO model_fallback_overrides (model_db_id, chain_json, updated_at)
-    VALUES (?, ?, datetime('now'))
-    ON CONFLICT(model_db_id) DO UPDATE SET
-      chain_json = excluded.chain_json,
-      updated_at = excluded.updated_at
-  `);
-  upsert.run(id, JSON.stringify(parsed.data.chain));
-
-  res.json({ success: true, chain: parsed.data.chain });
-});
-
-// Delete fallback override chain for a model
-modelsRouter.delete('/:id/fallback-override', (req: Request, res: Response) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id)) {
-    res.status(400).json({ error: { message: 'Invalid id' } });
-    return;
-  }
-
-  const db = getDb();
-  db.prepare('DELETE FROM model_fallback_overrides WHERE model_db_id = ?').run(id);
-  res.json({ success: true });
-});
-
-// Get fallback override chain for a model
-modelsRouter.get('/:id/fallback-override', (req: Request, res: Response) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id)) {
-    res.status(400).json({ error: { message: 'Invalid id' } });
-    return;
-  }
-
-  const db = getDb();
-  const row = db.prepare('SELECT chain_json FROM model_fallback_overrides WHERE model_db_id = ?').get(id) as { chain_json: string } | undefined;
-  if (!row) {
-    res.json({ chain: null });
-    return;
-  }
-
-  try {
-    const chain = JSON.parse(row.chain_json) as unknown;
-    if (!Array.isArray(chain) || !chain.every(n => Number.isInteger(n) && n > 0)) {
-      res.status(500).json({ error: { message: 'Invalid chain data stored in database' } });
-      return;
-    }
-    res.json({ chain });
-  } catch {
-    res.status(500).json({ error: { message: 'Invalid chain data stored in database' } });
-  }
 });
 
 // List all models with availability info
