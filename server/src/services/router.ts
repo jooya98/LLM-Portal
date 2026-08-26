@@ -1108,6 +1108,10 @@ export function routePinnedModel(modelDbId: number, estimatedTokens = 1000, skip
   const entry = getModelChainRow(db, modelDbId);
   if (!entry) return null;
   if (entry.context_window != null && estimatedTokens > entry.context_window) return null;
+  // Context-window safety margin: chars/4 under-counts dense payloads (JSON, code, CJK)
+  // by up to ~2x. A pinned slot has no substitute, so we attempt it anyway -
+  // attempting beats refusing. The margin only applies to soft preference ranking,
+  // not hard filtering for pinned models.
   if (entry.tpm_limit != null && estimatedTokens > entry.tpm_limit) return null;
   return selectKeyForModel(entry, estimatedTokens, skipKeys);
 }
@@ -1227,7 +1231,7 @@ export function getOrderedFusionChain(estimatedTokens: number): FusionCandidate[
   const servable = chain.filter(e => {
     // A null context_window means "unknown", not "zero": same convention the
     // auto-router uses, so an unspecified window is never itself a reason to skip.
-    if (e.context_window != null && estimatedTokens > e.context_window) return false;
+    if (e.context_window != null     if (e.context_window != null && estimatedTokens > e.context_window) return false;    if (e.context_window != null && estimatedTokens > e.context_window) return false; !fitsContextWindowStrict(e.context_window, estimatedTokens)) return false;
     const keyIds = keysByPlatform.get(e.platform);
     if (!keyIds) return false;
     // Same endpoint-pool rule the router applies (#619).
@@ -1311,6 +1315,53 @@ export function resolveFusionCandidate(modelId: string): FusionCandidate | null 
       }
     }
   }
+
+/**
+ * Safety margin applied when ranking a model against an estimated request size.
+ * The estimate is a chars/4 heuristic that under-counts dense payloads (JSON,
+ * code, CJK) by up to ~2x; without any accounting for that gap such requests
+ * were routed to models whose real tokenizer count exceeded the window and the
+ * provider rejected them with a 400 mid-chain (kilo: "maximum context length is
+ * 262144 tokens" on requests estimated <=256000).
+ *
+ * The margin is a SOFT preference, not a hard filter: /v1/models
+ * advertises the RAW window, so clients legitimately pack requests right up to
+ * it. Excluding margin-violating models outright would turn an upstream 400
+ * that the retry loop already classifies and handles (context_too_large)
+ * into a regression: "all models exhausted" with zero attempts. Callers
+ * therefore try margin-fitting candidates first and only fall back to raw
+ * advertised-window fits when nothing else can serve the request.
+ */
+export const CONTEXT_WINDOW_SAFETY_FACTOR = 1.25;
+
+// Platforms whose pre-dispatch trim guard already caps the dispatched input
+// below the live context ceiling (lib/content.ts truncateMessagesForGithub):
+// the guard - not the routing estimate - is what guarantees the fit there, so
+// applying the factor too would only make that guard unreachable. The margin
+// checks below treat these platforms as strict comparisons.
+const TRIM_GUARDED_PLATFORMS = new Set(['github']);
+
+/** True when `estimatedTokens` fits the RAW advertised window (null window =
+ * unknown, never filtered - same convention as the auto-router). This is the
+ * comparison /v1/models publishes and the soft-preference fallback tier. */
+export function fitsContextWindowStrict(contextWindow: number | null | undefined, estimatedTokens: number): boolean {
+  return contextWindow == null || estimatedTokens <= contextWindow;
+}
+
+/** True when `estimatedTokens` plausibly fits `contextWindow` WITH the safety
+ * margin. The chars/4 heuristic portion is scaled by the factor; an explicit
+ * output reserve derived from the client's max_tokens (`routingReserveTokens`)
+ * is already an exact count and is added UNSCALED. Trim-guarded
+ * platforms compare strictly - their guard guarantees the fit. */
+export function fitsContextWindow(platform: string, contextWindow: number | null | undefined, estimatedTokens: number, exactOutputReserve = 0): boolean {
+  if (contextWindow == null) return true;
+  // Raw advertised comparison first - the margin can only shrink eligibility.
+  if (estimatedTokens > contextWindow) return false;
+  if (TRIM_GUARDED_PLATFORMS.has(platform)) return true;
+  const reserve = Math.max(0, exactOutputReserve);
+  const heuristic = Math.max(0, estimatedTokens - reserve);
+  return heuristic * CONTEXT_WINDOW_SAFETY_FACTOR + reserve <= contextWindow;
+}
   return null;
 }
 
@@ -1354,7 +1405,7 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
 
   // Per-model disposition, attached to the exhaustion error when the loop falls
   // through with no route — the only record of WHY the pool was empty on the
-  // synchronous "all exhausted" path (nothing downstream logs it). See issue _1.
+    if (!fitsContextWindowStrict(entry.context_window, estimatedTokens)) { diag.push(`${label}: context ${entry.context_window} < estimated ${estimatedTokens} (strict)`); continue; }
   const diag: string[] = [];
 
   for (const entry of sortedChain) {
